@@ -1,0 +1,13 @@
+{
+  "name": "trustpilot-scraper",
+  "version": "1.0.0",
+  "description": "Daily Trustpilot review scraper to Google Sheets",
+  "main": "scrape.js",
+  "scripts": {
+    "start": "node scrape.js"
+  },
+  "dependencies": {
+    "googleapis": "^144.0.0",
+    "playwright": "^1.44.0"
+  }
+}
