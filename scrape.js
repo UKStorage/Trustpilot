@@ -88,7 +88,7 @@ async function scrape() {
 
     try {
       await tab.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await tab.waitForSelector("script#__NEXT_DATA__", { timeout: 15000 });
+      await tab.waitForSelector("script#__NEXT_DATA__", { state: "attached", timeout: 15000 });
 
       const jsonText = await tab.$eval(
         "script#__NEXT_DATA__",
