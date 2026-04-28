@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const QUERY = "ukstoragecompany.co.uk";
-const PAGES = 5;
+const PAGES = 35;
 const CSV_PATH = path.join(__dirname, "reviews.csv");
 
 // ── CSV helpers ──────────────────────────────────────────────────────────────
