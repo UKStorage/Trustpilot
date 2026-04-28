@@ -1,0 +1,12 @@
+{
+  "name": "trustpilot-scraper",
+  "version": "1.0.0",
+  "description": "Daily Trustpilot review scraper to CSV",
+  "main": "scrape.js",
+  "scripts": {
+    "start": "node scrape.js"
+  },
+  "dependencies": {
+    "playwright": "^1.44.0"
+  }
+}
