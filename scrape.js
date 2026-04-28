@@ -1,50 +1,44 @@
 const { chromium } = require("playwright");
-const fs = require("fs");
-const path = require("path");
+const { google } = require("googleapis");
 
 const QUERY = "ukstoragecompany.co.uk";
-const PAGES = 35;
-const CSV_PATH = path.join(__dirname, "reviews.csv");
+const SHEET_ID = process.env.GOOGLE_SHEET_ID;
+const PAGES = 5;
 
-// ── CSV helpers ──────────────────────────────────────────────────────────────
-const HEADERS = [
-  "ProfileURL", "TotalReviews", "StarRating", "Title", "ReviewText",
-  "Timestamp", "DateUTC", "ReviewID", "Verified", "ReviewerName",
-  "ReviewerID", "ReviewerAvatarURL", "ReviewerTotalReviews",
-  "ReviewerReviewsOnDomain", "CountryCode", "ReplyText", "ReplyDateUTC"
-];
-
-function escapeCSV(val) {
-  if (val === null || val === undefined) return "";
-  const str = String(val);
-  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-  return str;
+// ── Google Sheets auth ──────────────────────────────────────────────────────
+async function getSheet() {
+  const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+  const sheets = google.sheets({ version: "v4", auth });
+  return sheets;
 }
 
-function rowToCSV(row) {
-  return row.map(escapeCSV).join(",");
+// ── Read existing IDs from column I (col 9) ─────────────────────────────────
+async function getExistingIds(sheets) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Sheet1!I:I",
+  });
+  const rows = res.data.values || [];
+  return new Set(rows.flat().filter(Boolean));
 }
 
-// ── Read existing IDs from CSV ───────────────────────────────────────────────
-function getExistingIdsAndRows() {
-  if (!fs.existsSync(CSV_PATH)) {
-    return { existingIds: new Set(), existingRows: [], header: rowToCSV(HEADERS) };
+// ── Append rows to sheet ─────────────────────────────────────────────────────
+async function appendRows(sheets, rows) {
+  if (rows.length === 0) {
+    console.log("No new reviews to append.");
+    return;
   }
-  const lines = fs.readFileSync(CSV_PATH, "utf8").trim().split("\n");
-  const header = lines[0];
-  const dataLines = lines.slice(1);
-
-  // ReviewID is column index 7 (0-based)
-  const existingIds = new Set(
-    dataLines.map(line => {
-      const cols = line.split(",");
-      return cols[7]?.replace(/"/g, "").trim();
-    }).filter(Boolean)
-  );
-
-  return { existingIds, existingRows: dataLines, header };
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Sheet1!A1",
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: rows },
+  });
+  console.log(`Appended ${rows.length} new reviews.`);
 }
 
 // ── Clean text ───────────────────────────────────────────────────────────────
@@ -58,7 +52,7 @@ function formatDate(dateStr) {
   if (!dateStr) return "";
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return "";
-  return d.toISOString().replace("T", " ").substring(0, 19);
+  return d.toISOString().replace("T", " ").substring(0, 19); // yyyy-MM-dd HH:mm:ss
 }
 
 // ── Main scrape ──────────────────────────────────────────────────────────────
@@ -75,8 +69,9 @@ async function scrape() {
     locale: "en-GB",
   });
 
-  const { existingIds, existingRows, header } = getExistingIdsAndRows();
-  console.log(`Found ${existingIds.size} existing reviews in CSV.`);
+  const sheets = await getSheet();
+  const existingIds = await getExistingIds(sheets);
+  console.log(`Found ${existingIds.size} existing review IDs in sheet.`);
 
   const newRows = [];
 
@@ -88,7 +83,9 @@ async function scrape() {
 
     try {
       await tab.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await tab.waitForSelector("script#__NEXT_DATA__", { state: "attached", timeout: 15000 });
+
+      // Wait for Cloudflare to pass and page to load
+      await tab.waitForSelector("script#__NEXT_DATA__", { timeout: 15000 });
 
       const jsonText = await tab.$eval(
         "script#__NEXT_DATA__",
@@ -107,8 +104,10 @@ async function scrape() {
       for (const r of reviews) {
         if (existingIds.has(r.id)) continue;
 
-        const rawDate = r.dates?.publishedDate || r.createdAt || r.date || null;
-        const rawReplyDate = r.reply?.dates?.publishedDate || r.reply?.createdAt || null;
+        const rawDate =
+          r.dates?.publishedDate || r.createdAt || r.date || null;
+        const rawReplyDate =
+          r.reply?.dates?.publishedDate || r.reply?.createdAt || null;
         const timestamp = rawDate
           ? Math.floor(new Date(rawDate).getTime() / 1000)
           : "";
@@ -119,6 +118,7 @@ async function scrape() {
           r.rating ?? "",
           r.title ?? "",
           cleanText(r.text),
+          0,
           timestamp,
           formatDate(rawDate),
           r.id ?? "",
@@ -143,21 +143,7 @@ async function scrape() {
   }
 
   await browser.close();
-
-  if (newRows.length === 0) {
-    console.log("No new reviews found.");
-    return;
-  }
-
-  // Write CSV — header + existing rows + new rows
-  const allRows = [
-    header,
-    ...existingRows,
-    ...newRows.map(rowToCSV)
-  ];
-
-  fs.writeFileSync(CSV_PATH, allRows.join("\n"), "utf8");
-  console.log(`✅ Added ${newRows.length} new reviews. Total saved to reviews.csv`);
+  await appendRows(sheets, newRows);
 }
 
 scrape().catch((err) => {
