@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const QUERY = "ukstoragecompany.co.uk";
-const PAGES = 5;
+const PAGES = 10;
 const CSV_PATH = path.join(__dirname, "reviews.csv");
 
 // ── CSV helpers ──────────────────────────────────────────────────────────────
@@ -14,10 +14,13 @@ const HEADERS = [
   "ReviewerReviewsOnDomain", "CountryCode", "ReplyText", "ReplyDateUTC"
 ];
 
+// ReviewID is column index 7 (0-based)
+const REVIEW_ID_COL = 7;
+
 function escapeCSV(val) {
   if (val === null || val === undefined) return "";
   const str = String(val);
-  if (str.includes(",") || str.includes('"') || str.includes("\n")) {
+  if (str.includes(",") || str.includes('"') || str.includes("\n") || str.includes("\r")) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
@@ -27,22 +30,55 @@ function rowToCSV(row) {
   return row.map(escapeCSV).join(",");
 }
 
+// ── Proper CSV line parser (handles quoted fields with commas) ────────────────
+function parseCSVLine(line) {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      result.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
 // ── Read existing IDs from CSV ───────────────────────────────────────────────
 function getExistingIdsAndRows() {
   if (!fs.existsSync(CSV_PATH)) {
     return { existingIds: new Set(), existingRows: [], header: rowToCSV(HEADERS) };
   }
-  const lines = fs.readFileSync(CSV_PATH, "utf8").trim().split("\n");
-  const header = lines[0];
-  const dataLines = lines.slice(1);
 
-  // ReviewID is column index 7 (0-based)
+  const raw = fs.readFileSync(CSV_PATH, "utf8")
+    .replace(/\r\n/g, "\n")  // normalise Windows line endings
+    .replace(/\r/g, "\n")
+    .trim();
+
+  const lines = raw.split("\n");
+  const header = lines[0];
+  const dataLines = lines.slice(1).filter(Boolean);
+
   const existingIds = new Set(
     dataLines.map(line => {
-      const cols = line.split(",");
-      return cols[7]?.replace(/"/g, "").trim();
+      const cols = parseCSVLine(line);
+      return cols[REVIEW_ID_COL] || "";
     }).filter(Boolean)
   );
+
+  console.log(`Sample IDs from CSV: ${[...existingIds].slice(0, 3).join(", ")}`);
 
   return { existingIds, existingRows: dataLines, header };
 }
@@ -105,7 +141,9 @@ async function scrape() {
       console.log(`  Found ${reviews.length} reviews on page ${page}`);
 
       for (const r of reviews) {
-        if (existingIds.has(r.id)) continue;
+        const reviewId = String(r.id ?? "").trim();
+        console.log(`  Checking ID: "${reviewId}" — exists: ${existingIds.has(reviewId)}`);
+        if (existingIds.has(reviewId)) continue;
 
         const rawDate = r.dates?.publishedDate || r.createdAt || r.date || null;
         const rawReplyDate = r.reply?.dates?.publishedDate || r.reply?.createdAt || null;
@@ -121,7 +159,7 @@ async function scrape() {
           cleanText(r.text),
           timestamp,
           formatDate(rawDate),
-          r.id ?? "",
+          reviewId,
           r.isVerified ? "TRUE" : "FALSE",
           r.consumer?.displayName || "",
           r.consumer?.id || "",
@@ -133,7 +171,7 @@ async function scrape() {
           formatDate(rawReplyDate),
         ]);
 
-        existingIds.add(r.id);
+        existingIds.add(reviewId);
       }
     } catch (err) {
       console.error(`  Error on page ${page}: ${err.message}`);
